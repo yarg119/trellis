@@ -50,7 +50,7 @@ class SessionInfo:
     def project(self) -> str:
         if not self.cwd:
             return "?"
-        parts = self.cwd.split("/.claude/worktrees/")
+        parts = self.cwd.replace("\\", "/").split("/.claude/worktrees/")
         if len(parts) == 2:
             return f"{Path(parts[0]).name} ▸ worktree {parts[1].split('/')[0]}"
         return Path(self.cwd).name
@@ -127,10 +127,11 @@ def live_sessions(claude_dir: Path | None = None) -> dict[str, tuple[int, str]]:
     out: dict[str, tuple[int, str]] = {}
     for f in ((claude_dir or paths.CLAUDE_DIR) / "sessions").glob("*.json"):
         try:
-            d = json.loads(f.read_text())
+            d = json.loads(f.read_text(encoding="utf-8"))
             pid = int(d.get("pid"))
-            os.kill(pid, 0)
         except (OSError, ValueError, TypeError):
+            continue
+        if not paths.pid_alive(pid):
             continue
         if d.get("sessionId"):
             out[d["sessionId"]] = (pid, d.get("entrypoint", ""))
@@ -231,7 +232,7 @@ def create_worktree(repo: RepoInfo, name: str, base: str) -> tuple[Path, list[st
         excl = repo.main / ".git" / "info" / "exclude"
         try:
             excl.parent.mkdir(parents=True, exist_ok=True)
-            with excl.open("a") as f:
+            with excl.open("a", encoding="utf-8", newline="\n") as f:
                 f.write("\n**/.claude/worktrees/\n")
             notes.append("added **/.claude/worktrees/ to .git/info/exclude")
         except OSError:
@@ -239,7 +240,8 @@ def create_worktree(repo: RepoInfo, name: str, base: str) -> tuple[Path, list[st
     # JS repos: share the main checkout's node_modules, like the existing Verax worktrees do.
     nm = repo.main / "node_modules"
     if nm.is_dir() and (path / "package.json").exists() and not (path / "node_modules").exists():
-        (path / "node_modules").symlink_to(nm)
+        from .installer import make_link
+        make_link(nm, path / "node_modules")
         notes.append("linked node_modules from the main checkout")
     return path, notes
 

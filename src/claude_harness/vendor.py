@@ -33,7 +33,7 @@ def upstream_license(clone: Path) -> Path | None:
 
 
 def load_manifest() -> list[dict]:
-    return json.loads(MANIFEST.read_text())["skills"]
+    return json.loads(MANIFEST.read_text(encoding="utf-8"))["skills"]
 
 
 def skill_dir(entry: dict) -> Path:
@@ -63,7 +63,7 @@ def update(name: str | None = None, ref: str | None = None) -> list[str]:
     entries = [e for e in load_manifest() if name in (None, e["name"])]
     if not entries:
         return [f"no vendored skill named {name!r}"]
-    manifest = json.loads(MANIFEST.read_text())
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     with tempfile.TemporaryDirectory() as tmp:
         clones: dict[str, Path] = {}
         for e in entries:
@@ -82,13 +82,13 @@ def update(name: str | None = None, ref: str | None = None) -> list[str]:
             out = skill_dir(e)
             out.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(lic, out / "LICENSE")
-            (out / "SKILL.md").write_text(transform(e, (d / e["path"]).read_text()))
-            (out / "SOURCE.md").write_text(source_note(e, sha))
+            (out / "SKILL.md").write_text(transform(e, (d / e["path"]).read_text(encoding="utf-8")), encoding="utf-8", newline="\n")
+            (out / "SOURCE.md").write_text(source_note(e, sha), encoding="utf-8", newline="\n")
             for m in manifest["skills"]:
                 if m["name"] == e["name"]:
                     m["ref"] = sha
             log.append(f"{e['name']}: {sha[:10]} -> {out.relative_to(paths.REPO)}")
-    MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n")
+    MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     stat = subprocess.run(["git", "-C", str(paths.REPO), "diff", "--stat", "--", "claude/skills", "codex/skills", "vendor"],
                           capture_output=True, text=True).stdout.strip()
     log.append(stat or "no changes")

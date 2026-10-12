@@ -20,7 +20,7 @@ def latest_session_id() -> str | None:
 
 def session_info(session_id: str) -> dict[str, Any]:
     try:
-        return json.loads(paths.session_file(session_id).read_text())
+        return json.loads(paths.session_file(session_id).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"session_id": session_id}
 

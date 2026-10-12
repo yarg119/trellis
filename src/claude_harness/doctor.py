@@ -9,7 +9,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
-from . import config, paths
+from . import config, installer, paths
 
 DISABLING_ENV = ("DISABLE_TELEMETRY", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_EFFORT_LEVEL",
                  "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
@@ -24,7 +24,7 @@ class Check:
 
 def _run(cmd: list[str], timeout: float = 15, inp: str | None = None) -> tuple[int, str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=inp)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, input=inp)
         return r.returncode, (r.stdout + r.stderr).strip()
     except (OSError, subprocess.TimeoutExpired) as e:
         return 127, str(e)
@@ -32,7 +32,7 @@ def _run(cmd: list[str], timeout: float = 15, inp: str | None = None) -> tuple[i
 
 def _settings() -> dict:
     try:
-        return json.loads(paths.SETTINGS.read_text())
+        return json.loads(paths.SETTINGS.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
@@ -62,7 +62,7 @@ def run_checks(live: bool = True) -> list[Check]:
     for f in (".zshrc", ".zprofile", ".zshenv", ".profile", ".bashrc"):
         p = paths.HOME / f
         try:
-            if re.search(r"^\s*(export\s+)?(" + "|".join(DISABLING_ENV) + r")=", p.read_text(), re.M):
+            if re.search(r"^\s*(export\s+)?(" + "|".join(DISABLING_ENV) + r")=", p.read_text(encoding="utf-8"), re.M):
                 rc_files.append(f)
         except OSError:
             pass
@@ -71,18 +71,18 @@ def run_checks(live: bool = True) -> list[Check]:
 
     sl = (s.get("statusLine") or {}).get("command", "")
     slp = paths.CLAUDE_DIR / "statusline.sh"
-    out.append(Check("statusLine wired + executable", "PASS" if sl == str(slp) and os.access(slp, os.X_OK) else "FAIL", sl or "unset"))
+    out.append(Check("statusLine wired + executable", "PASS" if sl == paths.shell_path(slp) and os.access(slp, os.X_OK) else "FAIL", sl or "unset"))
     mock = json.dumps({"session_id": "doctor", "model": {"display_name": "Opus 5.5"}, "effort": {"level": "high"},
                        "context_window": {"used_percentage": 12}, "cost": {"total_cost_usd": 0.12, "total_duration_ms": 61000},
                        "workspace": {"current_dir": str(paths.HOME)}})
-    rc, o = _run([str(slp)], inp=mock) if slp.exists() else (1, "missing")
+    rc, o = _run([*paths.bash_cmd(), str(slp)], inp=mock) if slp.exists() else (1, "missing")
     out.append(Check("statusLine renders", "PASS" if rc == 0 and "Opus 5.5" in o else "FAIL", re.sub(r"\x1b\[[0-9;]*m", "", o)[:100]))
 
     for a in ("explorer", "worker", "researcher", "reviewer"):
         p = paths.CLAUDE_DIR / "agents" / f"{a}.md"
         try:
-            t = p.read_text()
-            good = p.is_symlink() and re.search(r"^model: sonnet$", t, re.M) and re.search(r"^effort: medium$", t, re.M)
+            t = p.read_text(encoding="utf-8")
+            good = installer.is_linked(p, paths.REPO_CLAUDE / "agents" / p.name) and re.search(r"^model: sonnet$", t, re.M) and re.search(r"^effort: medium$", t, re.M)
         except OSError:
             good = False
         out.append(Check(f"agent {a}: sonnet/medium", "PASS" if good else "FAIL", str(p) if good else "missing or wrong frontmatter"))
@@ -98,7 +98,7 @@ def run_checks(live: bool = True) -> list[Check]:
     if guard.exists():
         env = {**os.environ, "HARNESS_HOME": str(paths.HARNESS_HOME)}
         def g(cmd: str) -> str:
-            r = subprocess.run([str(guard)], input=json.dumps({"session_id": "doctor", "cwd": "/tmp", "tool_name": "Bash", "tool_input": {"command": cmd}}),
+            r = subprocess.run([*paths.bash_cmd(), str(guard)], input=json.dumps({"session_id": "doctor", "cwd": "/tmp", "tool_name": "Bash", "tool_input": {"command": cmd}}),
                                capture_output=True, text=True, env=env)
             try:
                 return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"]
@@ -106,17 +106,17 @@ def run_checks(live: bool = True) -> list[Check]:
                 return "allow"
         out.append(Check("guard denies rm -rf /", "PASS" if g("rm -rf /") == "deny" else "FAIL"))
         t0 = time.time(); allow = g("ls -la"); ms = (time.time() - t0) * 1000
-        out.append(Check("guard allows ls (fast)", "PASS" if allow == "allow" and ms < 80 else "WARN", f"{ms:.0f} ms"))
+        out.append(Check("guard allows ls (fast)", "PASS" if allow == "allow" and ms < (600 if paths.IS_WINDOWS else 80) else "WARN", f"{ms:.0f} ms"))
 
     pm_hooks = [c for ev in s.get("hooks", {}) for c in _hook_cmds(s, ev) if "puppetmaster" in c]
     try:
-        pm_mcp = "puppetmaster" in (json.loads(paths.CLAUDE_JSON.read_text()).get("mcpServers") or {})
+        pm_mcp = "puppetmaster" in (json.loads(paths.CLAUDE_JSON.read_text(encoding="utf-8")).get("mcpServers") or {})
     except (OSError, ValueError):
         pm_mcp = False
     pm_agents = []
     for p in (paths.HOME / "AGENTS.md", paths.CODEX_DIR / "AGENTS.md", paths.Path.cwd() / "AGENTS.md"):
         try:
-            if "puppetmaster:rules:begin" in p.read_text():
+            if "puppetmaster:rules:begin" in p.read_text(encoding="utf-8"):
                 pm_agents.append(str(p))
         except OSError:
             pass
@@ -141,10 +141,13 @@ def run_checks(live: bool = True) -> list[Check]:
         out.append(Check(f"rule {r}", "PASS" if (paths.CLAUDE_DIR / "rules" / f"{r}.md").exists() else "FAIL"))
     cm = paths.CLAUDE_DIR / "CLAUDE.md"
     try:
-        imp = "@~/.claude/HARNESS.md" in cm.read_text() and (paths.CLAUDE_DIR / "HARNESS.md").exists()
+        imp = "@~/.claude/HARNESS.md" in cm.read_text(encoding="utf-8") and (paths.CLAUDE_DIR / "HARNESS.md").exists()
     except OSError:
         imp = False
     out.append(Check("~/.claude/CLAUDE.md imports HARNESS.md", "PASS" if imp else "FAIL"))
+    stale = [link.name for target, link in installer.file_links() if link.exists() and not installer.is_linked(link, target)]
+    out.append(Check("installed files match the repo", "PASS" if not stale else "WARN",
+                     (", ".join(stale) + " differ; re-run: harness install") if stale else ""))
 
     hb = shutil.which("harness") or (str(paths.HOME / ".local/bin/harness") if (paths.HOME / ".local/bin/harness").exists() else "")
     out.append(Check("harness CLI on PATH (hooks call it for Jev)", "PASS" if hb else "WARN", hb or "run: uv tool install --editable " + str(paths.REPO)))
@@ -156,13 +159,13 @@ def run_checks(live: bool = True) -> list[Check]:
         rc, a = _run(["codex", "login", "status"]); out.append(Check("codex auth", "PASS" if "Logged in" in a else "WARN", a[:80]))
         hj = paths.CODEX_DIR / "hooks.json"
         try:
-            hooks_ok = any(str(hooks_dir) in c for ev in json.loads(hj.read_text()).get("hooks", {}) for c in _hook_cmds(json.loads(hj.read_text()), ev))
+            hooks_ok = any(paths.shell_path(hooks_dir) in c for ev in json.loads(hj.read_text(encoding="utf-8")).get("hooks", {}) for c in _hook_cmds(json.loads(hj.read_text(encoding="utf-8")), ev))
         except (OSError, ValueError):
             hooks_ok = False
         out.append(Check("codex hooks.json mirrors harness hooks", "PASS" if hooks_ok else "SKIP", "trust them once via /hooks in codex" if hooks_ok else "run: harness install --with-codex"))
         out.append(Check("codex profile ~/.codex/harness.config.toml", "PASS" if (paths.CODEX_DIR / "harness.config.toml").exists() else "SKIP", "use: codex -p harness"))
         try:
-            ab = "claude-harness:begin" in (paths.CODEX_DIR / "AGENTS.md").read_text()
+            ab = "claude-harness:begin" in (paths.CODEX_DIR / "AGENTS.md").read_text(encoding="utf-8")
         except OSError:
             ab = False
         out.append(Check("codex AGENTS.md harness block", "PASS" if ab else "SKIP"))
@@ -177,7 +180,7 @@ def run_checks(live: bool = True) -> list[Check]:
     has_key = bool(os.environ.get("AI_GATEWAY_API_KEY") or os.environ.get("TYPESAFE_API_KEY") or os.environ.get("OPENROUTER_API_KEY"))
     envf = paths.HARNESS_HOME / "env"
     try:
-        has_key = has_key or bool(re.search(r"^(export\s+)?(AI_GATEWAY_API_KEY|TYPESAFE_API_KEY|OPENROUTER_API_KEY)=", envf.read_text(), re.M))
+        has_key = has_key or bool(re.search(r"^(export\s+)?(AI_GATEWAY_API_KEY|TYPESAFE_API_KEY|OPENROUTER_API_KEY)=", envf.read_text(encoding="utf-8"), re.M))
     except OSError:
         pass
     out.append(Check("jev toggle + key", "PASS" if (not cfg.get("jev") or has_key) else "FAIL",

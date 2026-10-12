@@ -14,12 +14,12 @@ def frontmatter_name(text: str) -> str:
 def test_every_vendored_skill_is_present_pinned_and_named():
     for e in vendor.load_manifest():
         d = vendor.skill_dir(e)
-        skill = (d / "SKILL.md").read_text()
+        skill = (d / "SKILL.md").read_text(encoding="utf-8")
         assert frontmatter_name(skill) == e["name"]
-        src = (d / "SOURCE.md").read_text()
+        src = (d / "SOURCE.md").read_text(encoding="utf-8")
         assert e["ref"] in src and e["repo"] in src and e["license"] in src
         assert len(e["ref"]) == 40
-        lic = (d / "LICENSE").read_text()   # the upstream notice must ship with the copy (public repo)
+        lic = (d / "LICENSE").read_text(encoding="utf-8")   # the upstream notice must ship with the copy (public repo)
         assert "Copyright" in lic
         if e["license"] == "MIT":
             assert "Permission is hereby granted" in lic
@@ -36,5 +36,5 @@ def test_command_to_skill_transform_keeps_rules_and_replaces_frontmatter():
 
 def test_ui_check_skill_frontmatter():
     from claude_harness import paths
-    text = (paths.REPO_CLAUDE / "skills" / "ui-check" / "SKILL.md").read_text()
+    text = (paths.REPO_CLAUDE / "skills" / "ui-check" / "SKILL.md").read_text(encoding="utf-8")
     assert frontmatter_name(text) == "ui-check" and "playwright-cli" in text and "web-interface-guidelines" in text

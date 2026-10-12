@@ -98,7 +98,7 @@ class JevClient:
 def _log(session: str, row: dict[str, Any]) -> None:
     try:
         paths.ensure_dirs()
-        with paths.jev_file(session or "nosession").open("a") as f:
+        with paths.jev_file(session or "nosession").open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **row}) + "\n")
     except OSError:
         pass
@@ -121,7 +121,7 @@ def _repo_signals(cwd: str) -> dict[str, Any]:
 
 def _recent_events(session: str, n: int = 4) -> list[str]:
     try:
-        lines = paths.events_file(session).read_text().splitlines()[-n:]
+        lines = paths.events_file(session).read_text(encoding="utf-8").splitlines()[-n:]
         out = []
         for line in lines:
             ev = json.loads(line)

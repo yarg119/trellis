@@ -44,6 +44,7 @@ check_rm() { # $1 = segment
     [ "$first" = 1 ] && { first=0; continue; }   # skip 'rm'
     case "$tok" in -*) continue;; esac
     local p; p="$(expand_path "$tok")"
+    harness_upath "$p"; p="$REPLY"
     case "$p" in
       *'$'*) set_verdict ask "rm -r with an unexpanded variable in '$tok'"; continue;;
     esac
@@ -54,7 +55,7 @@ check_rm() { # $1 = segment
     case "$p" in
       /*)
         case "$p" in
-          "$ROOT"/*|"$H_CWD"/*|"${TMPDIR:-/tmp}"*|/tmp/*|/private/tmp/*|/private/var/folders/*|/var/folders/*) ;;
+          "$ROOT"/*|"$H_CWD"/*|"${TMPDIR:-/tmp}"*|/tmp/*|/private/tmp/*|/private/var/folders/*|/var/folders/*|"${HARNESS_WTMP:-/tmp}"/*) ;;
           *) set_verdict deny "rm -r target '$tok' is outside the project and tmp";;
         esac;;
     esac

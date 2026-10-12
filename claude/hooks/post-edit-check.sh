@@ -11,6 +11,7 @@ else
   [ -n "$H_FILE" ] && paths+=("$H_FILE")
 fi
 [ "${#paths[@]}" -gt 0 ] || exit 0
+for i in "${!paths[@]}"; do harness_upath "${paths[$i]}"; paths[$i]="$REPLY"; done
 for p in "${paths[@]}"; do
   case "$p" in /*) ;; *) p="$ROOT/$p";; esac
   printf '%s\n' "$p" >> "$STATE/edited"

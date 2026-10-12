@@ -9,7 +9,7 @@ from .. import config, paths
 
 def read_status(session_id: str) -> dict[str, Any] | None:
     try:
-        return json.loads(paths.status_file(session_id).read_text())
+        return json.loads(paths.status_file(session_id).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 

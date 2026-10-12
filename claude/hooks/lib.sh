@@ -7,12 +7,37 @@ HARNESS_HOME="${HARNESS_HOME:-$HOME/.claude/harness}"
 # Optional private env (API keys). chmod 600. Never printed.
 [ -r "$HARNESS_HOME/env" ] && . "$HARNESS_HOME/env"
 
+# Git Bash on Windows: a native jq.exe writes CRLF unless told not to (-b), and paths arrive as
+# C:\x\y (hook JSON) or C:/x/y (git). Normalise both so the hooks see what macOS and Linux give them.
+case "${OSTYPE:-}" in
+  msys*|cygwin*) HARNESS_WIN=1; jq() { command jq -b "$@"; };;
+  *) HARNESS_WIN="";;
+esac
+
+# harness_upath <path>: sets REPLY to the POSIX spelling (C:\Users\me -> /c/Users/me). No-op off
+# Windows. Sets a variable instead of printing because a subshell per call is slow on Windows.
+harness_upath() {
+  REPLY="$1"
+  [ -n "$HARNESS_WIN" ] || return 0
+  REPLY="${REPLY//\\//}"
+  case "$REPLY" in [A-Za-z]:|[A-Za-z]:/*)
+    local d="${REPLY%%:*}" lc=abcdefghijklmnopqrstuvwxyz uc=ABCDEFGHIJKLMNOPQRSTUVWXYZ pre
+    pre="${uc%%"$d"*}"; [ "${#pre}" -lt 26 ] && d="${lc:${#pre}:1}"
+    REPLY="/$d${REPLY#?:}";;
+  esac
+  return 0
+}
+HARNESS_WTMP=""   # the Windows temp directory in POSIX spelling; empty elsewhere
+[ -n "$HARNESS_WIN" ] && [ -n "${TEMP:-}" ] && { harness_upath "$TEMP"; HARNESS_WTMP="$REPLY"; }
+
 harness_read_input() {
   INPUT="$(cat 2>/dev/null || true)"
   [ -n "$INPUT" ] || INPUT='{}'
   eval "$(printf '%s' "$INPUT" | jq -r '@sh "H_EVENT=\(.hook_event_name // "") H_TOOL=\(.tool_name // "") H_CWD=\(.cwd // "") H_SESSION=\(.session_id // "") H_SOURCE=\(.source // "") H_TRIGGER=\(.trigger // "") H_STOP_ACTIVE=\((.stop_hook_active // false)|tostring) H_CMD=\(.tool_input.command // "") H_FILE=\(.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // "") H_TRANSCRIPT=\(.transcript_path // "") H_AGENT_TYPE=\(.agent_type // "") H_AGENT_ID=\(.agent_id // "")"' 2>/dev/null)" || true
   : "${H_SESSION:=nosession}"
   [ -n "$H_CWD" ] || H_CWD="$PWD"
+  harness_upath "$H_CWD"; H_CWD="$REPLY"
+  harness_upath "$H_FILE"; H_FILE="$REPLY"
 }
 
 harness_host() { if [ -n "${CLAUDE_PROJECT_DIR:-}" ] || [ -n "${CLAUDECODE:-}" ]; then echo claude; else echo "${HARNESS_HOST:-codex}"; fi; }
@@ -38,7 +63,10 @@ harness_bin() {
   return 1
 }
 
-harness_root() { git -C "$H_CWD" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$H_CWD"; }
+harness_root() {
+  local r; r="$(git -C "$H_CWD" rev-parse --show-toplevel 2>/dev/null)" || r="$H_CWD"
+  harness_upath "$r"; printf '%s' "$REPLY"
+}
 
 harness_pm() {
   local r="$1"
@@ -53,6 +81,7 @@ harness_tool_bin() {
   local r="$1" n="$2"
   if [ -x "$r/node_modules/.bin/$n" ]; then printf '%s' "$r/node_modules/.bin/$n"
   elif [ -x "$r/.venv/bin/$n" ]; then printf '%s' "$r/.venv/bin/$n"
+  elif [ -x "$r/.venv/Scripts/$n" ]; then printf '%s' "$r/.venv/Scripts/$n"
   else command -v "$n" 2>/dev/null || true; fi
 }
 

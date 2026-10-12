@@ -55,7 +55,7 @@ class HarnessApp(App):
         self.state.embedded = bool(command)
         try:
             import json
-            self.state.advisor.model = str(json.load(open(paths.SETTINGS)).get("advisorModel") or "")
+            self.state.advisor.model = str(json.loads(paths.SETTINGS.read_text(encoding="utf-8")).get("advisorModel") or "")
         except (OSError, ValueError):
             pass
         shown, skip = [], False

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from claude_harness.paths import bash_cmd
+
 HOOKS = Path(__file__).resolve().parents[1] / "claude" / "hooks"
 
 
@@ -19,7 +21,7 @@ def env(tmp_path):
 
 
 def run(script, payload, env):
-    r = subprocess.run([str(HOOKS / script)], input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=60)
+    r = subprocess.run([*bash_cmd(), str(HOOKS / script)], input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout) if r.stdout.strip() else None
 
@@ -54,7 +56,7 @@ def test_guard_allow_path_is_fast(env):
     t0 = time.time()
     for _ in range(5):
         guard("ls -la", env=env)
-    assert (time.time() - t0) / 5 < 0.15
+    assert (time.time() - t0) / 5 < (0.75 if os.name == "nt" else 0.15)   # process spawns are slow on Windows
 
 
 def test_readonly_guard(env):
@@ -117,7 +119,7 @@ def test_post_failure_reminder_on_third(tmp_path, env):
 def test_statusline_renders_and_mirrors(env, tmp_path):
     payload = {"session_id": "sl", "model": {"display_name": "Opus 5.5"}, "effort": {"level": "high"}, "context_window": {"used_percentage": 72},
                "cost": {"total_cost_usd": 1.23, "total_duration_ms": 125000}, "workspace": {"current_dir": str(tmp_path)}}
-    r = subprocess.run([str(HOOKS.parent / "statusline.sh")], input=json.dumps(payload), capture_output=True, text=True, env=env)
+    r = subprocess.run([*bash_cmd(), str(HOOKS.parent / "statusline.sh")], input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", env=env)
     assert "Opus 5.5" in r.stdout and "72%" in r.stdout and "high" in r.stdout
     assert json.loads((Path(env["HARNESS_HOME"]) / "status" / "sl.json").read_text())["session_id"] == "sl"
 

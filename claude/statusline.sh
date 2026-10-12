@@ -2,6 +2,7 @@
 # Status line: prints one line and mirrors the JSON payload for the harness dashboard.
 set -u
 HARNESS_HOME="${HARNESS_HOME:-$HOME/.claude/harness}"
+WIN=""; case "${OSTYPE:-}" in msys*|cygwin*) WIN=1; jq() { command jq -b "$@"; };; esac   # Git Bash: native jq.exe writes CRLF without -b
 input="$(cat 2>/dev/null || true)"; [ -n "$input" ] || exit 0
 IFS=$'\x1f' read -r sid model effort ctx cost dur h5 d7 dir agent sname fast <<< "$(printf '%s' "$input" | jq -r '[
   (.session_id // ""), (.model.display_name // .model.id // "?"), (.effort.level // ""),
@@ -9,6 +10,7 @@ IFS=$'\x1f' read -r sid model effort ctx cost dur h5 d7 dir agent sname fast <<<
   (.rate_limits.five_hour.used_percentage // "" | tostring), (.rate_limits.seven_day.used_percentage // "" | tostring),
   (.workspace.current_dir // ""), (.agent.name // ""), (.session_name // ""), (.fast_mode // false | tostring)
 ] | join("\u001f")' 2>/dev/null)"
+[ -n "$WIN" ] && dir="${dir//\\//}"   # C:\Users\me\repo -> C:/Users/me/repo so basename works
 if [ -n "$sid" ]; then mkdir -p "$HARNESS_HOME/status" 2>/dev/null && printf '%s' "$input" > "$HARNESS_HOME/status/$sid.json" 2>/dev/null; fi
 cfg="$HARNESS_HOME/config.json"
 codex="$(jq -r 'if .codex == true then "on" else "off" end' "$cfg" 2>/dev/null || echo off)"

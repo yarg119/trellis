@@ -10,7 +10,7 @@ from .events import JsonlTail, session_info
 
 
 def project_slug(cwd: str) -> str:
-    return re.sub(r"[/.]", "-", cwd)
+    return re.sub(r"[/\\:.]", "-", cwd)   # Windows: C:\Users\me\repo -> C--Users-me-repo
 
 
 def transcript_path(session_id: str, cwd: str | None = None) -> Path | None:

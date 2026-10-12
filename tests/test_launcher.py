@@ -8,11 +8,12 @@ from pathlib import Path
 import pytest
 
 from claude_harness import launcher as L
+from claude_harness.sources.transcript import project_slug
 
 
 def write_session(projects: Path, sid: str, *, cwd: str, entry="cli", branch="main", custom=None, ai=None,
                   first="first prompt", last=None, mtime=None, filler_bytes=0):
-    d = projects / ("-" + cwd.strip("/").replace("/", "-"))
+    d = projects / project_slug(cwd)
     d.mkdir(parents=True, exist_ok=True)
     lines = [{"type": "user", "cwd": cwd, "entrypoint": entry, "gitBranch": branch, "message": {"role": "user", "content": first}}]
     if filler_bytes:
@@ -81,7 +82,7 @@ def test_repo_info_and_create_worktree_from_chosen_base(repo):
     path, notes = L.create_worktree(info, "side", "feat/x")
     assert path == repo / ".claude" / "worktrees" / "side" and (path / "x.txt").exists()
     assert _git(path, "rev-parse", "--abbrev-ref", "HEAD") == "worktree-side"
-    assert (path / "node_modules").is_symlink() and (path / "node_modules").resolve() == (repo / "node_modules").resolve()
+    assert ((path / "node_modules").is_symlink() or (path / "node_modules").is_junction()) and (path / "node_modules").resolve() == (repo / "node_modules").resolve()
     assert "**/.claude/worktrees/" in (repo / ".git" / "info" / "exclude").read_text()
     assert ".claude" not in _git(repo, "status", "--porcelain")
     assert "already exists" in L.validate_name(info, "side")
@@ -122,7 +123,7 @@ async def test_launcher_new_here(repo, tmp_path):
 
 async def test_launcher_new_worktree(repo, tmp_path):
     plan = await _run(L.LauncherApp(repo, sessions=_sessions(tmp_path)), ["enter", "down", "enter", "down", "enter"], typed="my-task")
-    assert plan.kind == "new" and plan.name == "my-task" and plan.cwd.endswith(".claude/worktrees/my-task")
+    assert plan.kind == "new" and plan.name == "my-task" and Path(plan.cwd).as_posix().endswith(".claude/worktrees/my-task")
     assert _git(plan.cwd, "rev-parse", "--abbrev-ref", "HEAD") == "worktree-my-task"
 
 

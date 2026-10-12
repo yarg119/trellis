@@ -17,7 +17,7 @@ DEFAULTS: dict[str, Any] = {
 
 def load() -> dict[str, Any]:
     try:
-        data = json.loads(paths.CONFIG.read_text())
+        data = json.loads(paths.CONFIG.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
     return {**DEFAULTS, **data}
@@ -25,7 +25,7 @@ def load() -> dict[str, Any]:
 
 def save(cfg: dict[str, Any]) -> None:
     paths.ensure_dirs()
-    paths.CONFIG.write_text(json.dumps(cfg, indent=2) + "\n")
+    paths.CONFIG.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def set_value(key: str, value: Any) -> dict[str, Any]:

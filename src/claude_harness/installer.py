@@ -39,36 +39,101 @@ class Backups:
             return
         self.dir.mkdir(parents=True, exist_ok=True)
         dest = self.dir / p.name if p.parent == paths.HOME else self.dir / (p.parent.name + "-" + p.name)
+        if dest.exists():   # a second write within the same second must not replace the original with our own output
+            return
         shutil.copy2(p, dest)
         log(f"backup {p} -> {dest}")
 
 
 def harness_bin() -> str:
-    for cand in (paths.HOME / ".local" / "bin" / "harness", Path(shutil.which("harness") or "")):
-        if cand and cand.exists():
-            return str(cand)
+    exe = "harness.exe" if paths.IS_WINDOWS else "harness"
+    for cand in (paths.HOME / ".local" / "bin" / exe, Path(shutil.which("harness") or "")):
+        if cand and cand.is_file():
+            return paths.shell_path(cand)
     return "harness"
 
 
 def render(text: str) -> str:
-    return (text.replace("__HOME__", str(paths.HOME))
-                .replace("__HOOKS__", str(paths.CLAUDE_DIR / "hooks"))
+    return (text.replace("__HOME__", paths.shell_path(paths.HOME))
+                .replace("__HOOKS__", paths.shell_path(paths.CLAUDE_DIR / "hooks"))
                 .replace("__HARNESS_BIN__", harness_bin()))
 
 
+# Windows without Developer Mode cannot create symlinks unprivileged, so _link falls back to a
+# junction (directories) or a hard link (files; a copy across volumes). Those look like ordinary
+# directories and files, so the ones we made are recorded here for re-install and uninstall.
+def _fallback_links() -> dict[str, str]:
+    return _load_json(paths.HARNESS_HOME / "links.json")
+
+
+def _record_fallback(link: Path, kind: str | None) -> None:
+    links = _fallback_links()
+    if kind is None:
+        if links.pop(str(link), None) is None:
+            return
+    else:
+        links[str(link)] = kind
+    paths.HARNESS_HOME.mkdir(parents=True, exist_ok=True)
+    (paths.HARNESS_HOME / "links.json").write_text(_dump(links), encoding="utf-8", newline="\n")
+
+
+def _is_link(p: Path) -> bool:
+    return p.is_symlink() or p.is_junction()
+
+
+def is_linked(link: Path, target: Path) -> bool:
+    """True when `link` is `target`: a symlink or junction to it, or a hard link to the same file."""
+    try:
+        return link.resolve() == target.resolve() or os.path.samefile(link, target)
+    except OSError:
+        return False
+
+
+def _remove_link(link: Path) -> None:
+    if link.is_junction():
+        os.rmdir(link)      # removes the junction itself, never the directory it points at
+    else:
+        link.unlink()
+
+
+def make_link(target: Path, link: Path) -> str:
+    """Symlink `link` to `target`; where Windows refuses, fall back and say which kind was made."""
+    try:
+        link.symlink_to(target)
+        return "symlink"
+    except OSError:
+        if not paths.IS_WINDOWS:
+            raise
+    if target.is_dir():
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+        return "junction"
+    try:
+        os.link(target, link)
+        return "hardlink"
+    except OSError:
+        shutil.copy2(target, link)
+        return "copy"
+
+
 def _link(target: Path, link: Path, log: Log, dry: bool, force: bool = False) -> None:
-    if link.is_symlink():
+    if _is_link(link):
         if link.resolve() == target.resolve():
             return
         if not force and not str(link.resolve()).startswith(str(paths.REPO)):
             log(f"skip {link}: symlink to foreign target {link.resolve()} (use --force)")
             return
     elif link.exists():
-        if not force:
+        if is_linked(link, target):
+            return
+        ours = str(link) in _fallback_links()
+        if not ours and not force:
             log(f"skip {link}: exists and is not a symlink (use --force to replace)")
             return
         if dry:
             log(f"[dry] replace {link}")
+        elif ours:              # a hard link or copy that went stale (e.g. git rewrote the repo file)
+            link.unlink()
         else:
             bak = link.with_name(link.name + f".bak-{_ts()}")
             link.rename(bak)
@@ -77,14 +142,15 @@ def _link(target: Path, link: Path, log: Log, dry: bool, force: bool = False) ->
         log(f"[dry] link {link} -> {target}")
         return
     link.parent.mkdir(parents=True, exist_ok=True)
-    if link.is_symlink():
-        link.unlink()
-    link.symlink_to(target)
-    log(f"link {link} -> {target}")
+    if _is_link(link):
+        _remove_link(link)
+    kind = make_link(target, link)
+    _record_fallback(link, None if kind == "symlink" else kind)
+    log(f"link {link} -> {target}" + ("" if kind == "symlink" else f" ({kind}: symlinks need Developer Mode on Windows)"))
 
 
 def _write_if_changed(p: Path, content: str, bk: Backups, log: Log, dry: bool) -> bool:
-    old = p.read_text() if p.exists() else None
+    old = p.read_text(encoding="utf-8") if p.exists() else None
     if old == content:
         log(f"unchanged {p}")
         return False
@@ -93,20 +159,29 @@ def _write_if_changed(p: Path, content: str, bk: Backups, log: Log, dry: bool) -
         log(f"[dry] write {p}")
         return True
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
+    p.write_text(content, encoding="utf-8", newline="\n")
     log(f"wrote {p}")
     return True
 
 
 def _load_json(p: Path) -> dict:
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
 def _dump(d: dict) -> str:
     return json.dumps(d, indent=2, ensure_ascii=False) + "\n"
+
+
+def file_links() -> list[tuple[Path, Path]]:
+    """(repo file, installed path) for every single-file link. Hard-link fallbacks go stale when git
+    or an editor replaces the repo file, so the doctor checks these."""
+    src = paths.REPO_CLAUDE
+    return ([(f, paths.CLAUDE_DIR / "agents" / f.name) for f in sorted((src / "agents").glob("*.md"))]
+            + [(f, paths.CLAUDE_DIR / "rules" / f.name) for f in sorted((src / "rules").glob("*.md"))]
+            + [(src / "statusline.sh", paths.CLAUDE_DIR / "statusline.sh"), (src / "CLAUDE.md", paths.CLAUDE_DIR / "HARNESS.md")])
 
 
 def link_claude_files(log: Log, dry: bool, force: bool) -> None:
@@ -119,7 +194,7 @@ def link_claude_files(log: Log, dry: bool, force: bool) -> None:
     for f in sorted((src / "rules").glob("*.md")):
         _link(f, paths.CLAUDE_DIR / "rules" / f.name, log, dry, force)
     hooks_link = paths.CLAUDE_DIR / "hooks"
-    if hooks_link.exists() and not hooks_link.is_symlink():
+    if hooks_link.exists() and not _is_link(hooks_link):
         for f in sorted((src / "hooks").glob("*.sh")):
             _link(f, hooks_link / f.name, log, dry, force)
     else:
@@ -135,7 +210,7 @@ def ensure_claude_md_import(bk: Backups, log: Log, dry: bool) -> None:
     if not p.exists():
         _write_if_changed(p, IMPORT_LINE + "\n", bk, log, dry)
         return
-    text = p.read_text()
+    text = p.read_text(encoding="utf-8")
     if any(line.strip() == IMPORT_LINE for line in text.splitlines()):
         log(f"unchanged {p} (import present)")
         return
@@ -144,8 +219,8 @@ def ensure_claude_md_import(bk: Backups, log: Log, dry: bool) -> None:
 
 def merge_settings(bk: Backups, log: Log, dry: bool, remove_puppetmaster: bool) -> None:
     base = _load_json(paths.SETTINGS)
-    fragment = json.loads(render((paths.REPO_CLAUDE / "settings.fragment.json").read_text()))
-    base = drop_hook_groups(base, str(paths.CLAUDE_DIR / "hooks"))
+    fragment = json.loads(render((paths.REPO_CLAUDE / "settings.fragment.json").read_text(encoding="utf-8")))
+    base = drop_hook_groups(base, paths.shell_path(paths.CLAUDE_DIR / "hooks"))
     if remove_puppetmaster:
         base = drop_hook_groups(base, "puppetmaster")
     merged = deep_merge(base, fragment)
@@ -166,7 +241,7 @@ def remove_puppetmaster(bk: Backups, log: Log, dry: bool) -> None:
             else:
                 cj = _load_json(paths.CLAUDE_JSON)
                 cj.get("mcpServers", {}).pop("puppetmaster", None)
-                paths.CLAUDE_JSON.write_text(_dump(cj))
+                paths.CLAUDE_JSON.write_text(_dump(cj), encoding="utf-8", newline="\n")
                 log("removed MCP server puppetmaster (edited ~/.claude.json)")
     else:
         log("puppetmaster MCP server: not registered")
@@ -174,7 +249,7 @@ def remove_puppetmaster(bk: Backups, log: Log, dry: bool) -> None:
     for p in (paths.HOME / "AGENTS.md", paths.CODEX_DIR / "AGENTS.md"):
         if not p.exists():
             continue
-        text = p.read_text()
+        text = p.read_text(encoding="utf-8")
         if PM_BEGIN not in text:
             continue
         new = re.sub(re.escape(PM_BEGIN) + r".*?" + re.escape(PM_END) + r"\n?", "", text, flags=re.S).strip("\n")
@@ -183,7 +258,7 @@ def remove_puppetmaster(bk: Backups, log: Log, dry: bool) -> None:
             log(f"[dry] strip puppetmaster block from {p}" + (" and delete (empty)" if not new.strip() else ""))
             continue
         if new.strip():
-            p.write_text(new + "\n")
+            p.write_text(new + "\n", encoding="utf-8", newline="\n")
             log(f"stripped puppetmaster block from {p}")
         else:
             p.unlink()
@@ -204,12 +279,12 @@ def install_codex(bk: Backups, log: Log, dry: bool, force: bool) -> None:
             _link(d, paths.CODEX_DIR / "skills" / d.name, log, dry, force)
     _link(paths.REPO_CODEX / "harness.config.toml", paths.CODEX_DIR / "harness.config.toml", log, dry, force)
     base = _load_json(paths.CODEX_DIR / "hooks.json")
-    fragment = json.loads(render((paths.REPO_CODEX / "hooks.json").read_text()))
-    base = drop_hook_groups(base, str(paths.CLAUDE_DIR / "hooks"))
+    fragment = json.loads(render((paths.REPO_CODEX / "hooks.json").read_text(encoding="utf-8")))
+    base = drop_hook_groups(base, paths.shell_path(paths.CLAUDE_DIR / "hooks"))
     _write_if_changed(paths.CODEX_DIR / "hooks.json", _dump(deep_merge(base, fragment)), bk, log, dry)
     agents = paths.CODEX_DIR / "AGENTS.md"
-    block = render((paths.REPO_CODEX / "AGENTS.md").read_text())
-    _write_if_changed(agents, _replace_block(agents.read_text() if agents.exists() else "", block), bk, log, dry)
+    block = render((paths.REPO_CODEX / "AGENTS.md").read_text(encoding="utf-8"))
+    _write_if_changed(agents, _replace_block(agents.read_text(encoding="utf-8") if agents.exists() else "", block), bk, log, dry)
     if not dry and shutil.which("codex"):
         r = subprocess.run(["codex", "features", "enable", "hooks"], capture_output=True, text=True)
         log("codex features enable hooks: " + ("ok" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:120]))
@@ -243,19 +318,22 @@ def uninstall(dry: bool = False) -> Log:
     for link in [*(paths.CLAUDE_DIR / "agents").glob("*.md"), *(paths.CLAUDE_DIR / "skills").iterdir(),
                  *(paths.CLAUDE_DIR / "rules").glob("*.md"), paths.CLAUDE_DIR / "hooks",
                  paths.CLAUDE_DIR / "statusline.sh", paths.CLAUDE_DIR / "HARNESS.md",
-                 paths.CODEX_DIR / "harness.config.toml"]:
-        if link.is_symlink() and str(link.resolve()).startswith(str(paths.REPO)):
+                 paths.CODEX_DIR / "harness.config.toml", *map(Path, _fallback_links())]:
+        ours = _is_link(link) and str(link.resolve()).startswith(str(paths.REPO))
+        ours = ours or (str(link) in _fallback_links() and (_is_link(link) or link.is_file()))
+        if ours:
             log(("[dry] " if dry else "") + f"unlink {link}")
             if not dry:
-                link.unlink()
+                _remove_link(link)
+                _record_fallback(link, None)
     base = _load_json(paths.SETTINGS)
-    base = drop_hook_groups(base, str(paths.CLAUDE_DIR / "hooks"))
+    base = drop_hook_groups(base, paths.shell_path(paths.CLAUDE_DIR / "hooks"))
     for k in ("statusLine",):
         base.pop(k, None)
     _write_if_changed(paths.SETTINGS, _dump(base), bk, log, dry)
     ch = _load_json(paths.CODEX_DIR / "hooks.json")
     if ch:
-        _write_if_changed(paths.CODEX_DIR / "hooks.json", _dump(drop_hook_groups(ch, str(paths.CLAUDE_DIR / "hooks"))), bk, log, dry)
+        _write_if_changed(paths.CODEX_DIR / "hooks.json", _dump(drop_hook_groups(ch, paths.shell_path(paths.CLAUDE_DIR / "hooks"))), bk, log, dry)
     log("kept: model/advisor/effort settings, ~/.claude/CLAUDE.md import line, backups under " + str(paths.HARNESS_HOME / "backups"))
     return log
 
@@ -285,7 +363,7 @@ def set_jev(on: bool) -> Log:
 def _env_file_has_key() -> bool:
     p = paths.HARNESS_HOME / "env"
     try:
-        return bool(re.search(r"^(export\s+)?(AI_GATEWAY_API_KEY|TYPESAFE_API_KEY|OPENROUTER_API_KEY)=", p.read_text(), re.M))
+        return bool(re.search(r"^(export\s+)?(AI_GATEWAY_API_KEY|TYPESAFE_API_KEY|OPENROUTER_API_KEY)=", p.read_text(encoding="utf-8"), re.M))
     except OSError:
         return False
 

@@ -159,6 +159,13 @@ def cmd_run(a: argparse.Namespace) -> int:
     if a.print_cmd:
         print(" ".join(cmd))
         return 0
+    if paths.IS_WINDOWS:
+        # textual-tty's Windows backend cannot spawn a command with arguments, so the embedded pane is
+        # POSIX-only for now. Keep the launcher and the flags: run claude here, dashboard in a second tab.
+        import subprocess
+        print("harness: the embedded claude pane is not available on Windows yet. Starting claude in this\n"
+              f"         terminal; for the dashboard run `harness attach {sid}` in a second one.", file=sys.stderr)
+        return subprocess.call(cmd, env={**os.environ, "HARNESS_SESSION_ID": sid})
     if a.layout == "tmux":
         from .tmux import run_tmux
         return run_tmux(sid, cmd)
@@ -210,6 +217,12 @@ SUBCOMMANDS = {"run", "attach", "install", "uninstall", "doctor", "init", "codex
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if paths.IS_WINDOWS:   # piped output defaults to cp1252 there, which cannot encode the tree characters
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):
+                pass
     if not argv or (argv[0] not in SUBCOMMANDS and argv[0] not in ("-h", "--help", "--version")):
         argv = ["run", *argv]          # bare `harness` (or `harness -C dir`) = the launcher
     args = build_parser().parse_args(argv)
