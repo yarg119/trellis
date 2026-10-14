@@ -62,11 +62,13 @@ check_rm() { # $1 = segment
   done
 }
 
-check_git_push() { # $1 = segment
-  local seg="$1" force=0 lease=0 tok refs=() branch=""
+check_git_push() { # $1 = segment. Any push that lands on main/master asks; a force push there is denied.
+  local seg="$1" force=0 lease=0 tok refs=() branch="" cdir="$H_CWD" next_c=0
   [[ "$seg" =~ ^git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+push ]] || return 0
   for tok in $seg; do
+    if [ "$next_c" = 1 ]; then cdir="$(expand_path "$tok")"; next_c=0; continue; fi
     case "$tok" in
+      -C) next_c=1;;
       --force-with-lease*) lease=1;;
       --force|-f|-[a-zA-Z]*f*) force=1;;
       +*) force=1; refs+=("${tok#+}");;
@@ -74,19 +76,21 @@ check_git_push() { # $1 = segment
       *) refs+=("$tok");;
     esac
   done
-  [ "$force" = 1 ] || [ "$lease" = 1 ] || return 0
+  branch="$(git -C "$cdir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   local hit=0 r
   if [ "${#refs[@]}" -gt 0 ]; then
     for r in "${refs[@]}"; do
       [[ "$r" =~ ^(refs/heads/)?([^:]+:)?(main|master)$ ]] && hit=1
-      [[ "$r" =~ :(main|master)$ ]] && hit=1
+      [[ "$r" =~ :(refs/heads/)?(main|master)$ ]] && hit=1
+      [ "$r" = HEAD ] && [[ "$branch" =~ ^(main|master)$ ]] && hit=1
     done
   else
-    branch="$(git -C "$ROOT" symbolic-ref --short -q HEAD 2>/dev/null || true)"
     [[ "$branch" =~ ^(main|master)$ ]] && hit=1
   fi
   [ "$hit" = 1 ] || return 0
-  if [ "$force" = 1 ]; then set_verdict deny "force-push to main/master is blocked"; else set_verdict ask "force-with-lease to main/master"; fi
+  if [ "$force" = 1 ]; then set_verdict deny "force-push to main/master is blocked"
+  elif [ "$lease" = 1 ]; then set_verdict ask "force-with-lease to main/master"
+  else set_verdict ask "push to main/master: the owner merges main; sessions push their own branch"; fi
 }
 
 check_bash() {
